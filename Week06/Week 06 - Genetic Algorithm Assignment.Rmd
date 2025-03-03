@@ -1,0 +1,110 @@
+---
+title: "Week 6 Assignment"
+author: "Harika Pamulapati"
+date: "2025-03-02"
+output: html_document
+---
+
+```{r}
+library(data.table)
+library(geosphere)
+library(GA)
+library(purrr)
+library(sf)
+
+## Load the population data
+pop.data <- data.table::fread("Mo_pop_Sim.csv")
+str(pop.data)
+frac <- 0.0001
+small.data <- pop.data[sample(1:nrow(pop.data),
+                               size = round(nrow(pop.data) * frac),
+                               replace = F), ## extract a sample of randomlychosen 1% rows
+                        ]  ## and choose all columns
+
+## Load the FQHC data
+data_path <- 'MO_2018_Federally_Qualified_Health_Center_Locations'
+fqhc.data <- data.table(as.data.frame(st_read(data_path,
+                     'MO_2018_Federally_Qualified_Health_Center_Locations')))
+```
+
+
+1. One approach can be to use the average closeness of a location from all of the residences - those locations that are the closest to all of the residences, on average, are the ones that are more easily accessible, and therefore would/should be selected. What is the assumption that is implicit here?
+
+```{r}
+# Extract relevant columns
+fqhc.data <- fqhc.data[, .(Facility, Longitude, Latitude)]
+small.data <- small.data[, .(long, lat)]
+
+# Approach 1: Find the 8 FQHCs closest to all residences (on average)
+closeness_scores <- sapply(1:nrow(fqhc.data), function(i) {
+  mean(distGeo(matrix(c(fqhc.data$Longitude[i], fqhc.data$Latitude[i]), ncol=2), 
+               matrix(c(small.data$long, small.data$lat), ncol=2)))
+})
+
+top_8_closest <- fqhc.data[order(closeness_scores)][1:8]
+top_8_closest
+```
+
+2. Another approach is to consider locations that have the highest densities of residences within a 30-mile radius (e.g., if location 1 has 59 residences and location 2 has 84 residences in a 30-mile radius, location 1 is to be considered "better" - why? because it can serve more people)
+
+```{r}
+# Approach 2: Find the 8 FQHCs with the highest population density within a 30-mile radius
+radius_meters <- 30 * 1609.34
+
+density_scores <- sapply(1:nrow(fqhc.data), function(i) {
+  sum(distGeo(matrix(c(fqhc.data$Longitude[i], fqhc.data$Latitude[i]), ncol=2), 
+              matrix(c(small.data$long, small.data$lat), ncol=2)) < radius_meters)
+})
+
+top_8_dense <- fqhc.data[order(-density_scores)][1:8]
+top_8_dense
+```
+
+
+```{r}
+# Define the number of facilities to select
+num_facilities <- 8
+distance_radius <- 30 * 1609.34
+
+fitness_function <- function(selection) {
+  selected_fqhc <- fqhc.data[selection == 1, ]
+  
+  total_population <- sum(sapply(1:nrow(selected_fqhc), function(i) {
+    sum(distGeo(matrix(c(selected_fqhc$Longitude[i], selected_fqhc$Latitude[i]), ncol=2), 
+                 matrix(c(small.data$long, small.data$lat), ncol=2)) < distance_radius)
+  }))
+  
+  return(total_population)
+}
+
+# Running the Genetic Algorithm
+ga_result <- ga(
+  type = "binary",
+  fitness = function(x) fitness_function(x),
+  nBits = nrow(fqhc.data),  
+  popSize = 50,     
+  maxiter = 20,    
+  pmutation = 0.1, 
+  elitism = 2      
+)
+
+# Extract the best solution
+best_solution <- as.logical(ga_result@solution[1, ])
+selected_fqhc <- fqhc.data[best_solution, ]
+
+# Display selected FQHCs
+print(selected_fqhc)
+
+```
+
+
+
+
+Chosen Approach and Rationale
+Among the available approaches I have decided to use Approach 2 which selects FQHC locations based on their population density within thirty miles of geographic reach. Our selection decision leans toward using this strategy because mental health service effectiveness relies both on proximity and the ability to service high numbers of participants. Approach locations with dense residential patterns to achieve the greatest possible outcome for mental health service introduction. The selection process prioritizes facilities which can reach the maximum number of vulnerable individuals instead of being located at the population center.
+
+The main assumption of this method suggests that persons tend to obtain mental health care when facilities stay within 30 miles of their location. All statistical observations derived from the small.data subset maintain valid status for the complete population due to its representative distribution in the full dataset. This model assumes that every FQHC maintains identical capacity to accept new service responsibilities regardless of available resources or staffing conditions.
+
+Fitness Function
+The proposed fitness measure calculates how many residents exist within a distance of 30 miles from each FQHC. The density score represents the population person count that lives in a 30-mile radius limit of each FQHC facility. A higher count from this metric will indicate the chosen site can support numerous individuals in its service area. The fundamental goal of service area density measurement is to achieve better accessibility for larger numbers of people with limited mental health resources.
+
